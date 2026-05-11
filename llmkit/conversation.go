@@ -57,9 +57,10 @@ func (conv *Conversation) AddImageURL(url string) *Conversation {
 	return conv
 }
 
-// AddImageBase64 向当前消息缓冲区添加 Base64 图片
-func (conv *Conversation) AddImageBase64(prefix, data string) *Conversation {
-	conv.currentMsg.AddImageBase64(prefix, data)
+// AddImageBase64 向当前消息缓冲区添加 Base64 图片。
+// 默认会按 image/png 处理；如需其他类型，可额外传入 MIME 类型。
+func (conv *Conversation) AddImageBase64(data string, mimeType ...string) *Conversation {
+	conv.currentMsg.AddImageBase64(data, mimeType...)
 	return conv
 }
 

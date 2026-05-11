@@ -2,6 +2,7 @@ package llmkit
 
 import (
 	"fmt"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -41,10 +42,26 @@ func (b *MessageBuilder) AddImageURL(url string) *MessageBuilder {
 	return b
 }
 
-// AddImageBase64 添加 Base64 图片
-// prefix: 如 "image/jpeg", data: 纯 base64 字符串
-func (b *MessageBuilder) AddImageBase64(prefix string, data string) *MessageBuilder {
-	base64Str := fmt.Sprintf("%s;base64,%s", prefix, data)
+// AddImageBase64 添加 Base64 图片。
+// 默认使用 image/png；如需其他类型，可传入可选的 mimeType 覆盖。
+func (b *MessageBuilder) AddImageBase64(data string, mimeType ...string) *MessageBuilder {
+	mime := "image/png"
+	if len(mimeType) > 0 && mimeType[0] != "" {
+		mime = mimeType[0]
+	}
+
+	if strings.HasPrefix(data, "data:") {
+		b.parts = append(b.parts, openai.ChatMessagePart{
+			Type: openai.ChatMessagePartTypeImageURL,
+			ImageURL: &openai.ChatMessageImageURL{
+				URL:    data,
+				Detail: openai.ImageURLDetailAuto,
+			},
+		})
+		return b
+	}
+
+	base64Str := fmt.Sprintf("data:%s;base64,%s", mime, data)
 	b.parts = append(b.parts, openai.ChatMessagePart{
 		Type: openai.ChatMessagePartTypeImageURL,
 		ImageURL: &openai.ChatMessageImageURL{

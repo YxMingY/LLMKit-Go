@@ -106,7 +106,7 @@ func main() {
     base64Str := base64.StdEncoding.EncodeToString(imageData)
     convo.
         AddText("请描述这张本地图片").
-        AddImageBase64("image/png", base64Str)
+        AddImageBase64(base64Str)
 
     fmt.Print("AI: ")
     err = convo.SendStream(ctx, func(chunk string) error {
@@ -126,7 +126,10 @@ func main() {
 imageData, _ := os.ReadFile("test.png")
 base64Str := base64.StdEncoding.EncodeToString(imageData)
 
-convo.AddText("描述这张图片").AddImageBase64("image/png", base64Str)
+convo.AddText("描述这张图片").AddImageBase64(base64Str)
+
+// 如果不是 PNG，也可以指定 MIME 类型：
+// convo.AddImageBase64(base64Str, "image/jpeg")
 ```
 
 ## 设计说明

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -70,4 +71,35 @@ func main() {
 	fmt.Println("AI:", resp4)
 
 	fmt.Printf("\n当前历史消息条数: %d (限制为 6)\n", len(convo.History))
+
+	// --- 第 5 轮：Qwen + Base64 图片测试 ---
+	fmt.Println("\n=== Round 5: Qwen Base64 Image Test ===")
+	qwenClient, err := llmkit.NewClient(llmkit.Config{
+		Provider: llmkit.ProviderAliyun,
+		APIKey:   os.Getenv("DASHSCOPE_API_KEY"),
+		Model:    "qwen-vl-plus",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	qwenConvo := qwenClient.NewConversation()
+	qwenConvo.SetMaxHistory(6)
+
+	imageData, err := os.ReadFile("test.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	base64Str := base64.StdEncoding.EncodeToString(imageData)
+	qwenConvo.
+		AddText("请描述这张本地图片的内容").
+		AddImageBase64(base64Str)
+
+	qwenResp, err := qwenConvo.Send(ctx)
+	if err != nil {
+		log.Printf("Qwen Base64 测试失败: %v", err)
+	} else {
+		fmt.Println("Qwen AI:", qwenResp)
+	}
 }
