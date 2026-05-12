@@ -69,9 +69,16 @@ func NewClient(cfg Config) (*Client, error) {
 // NewConversation 创建会话
 func (c *Client) NewConversation() *Conversation {
 	return &Conversation{
-		client:     c,
-		History:    make([]openai.ChatCompletionMessage, 0),
-		currentMsg: NewMessageBuilder(), // 初始化一个空的构建器
-		MaxHistory: 0,
+		client:         c,
+		History:        make([]openai.ChatCompletionMessage, 0),
+		currentMsg:     NewMessageBuilder(), // 初始化一个空的构建器
+		MaxHistory:     0,
+		RequestOptions: DefaultOptions(),
 	}
+}
+
+// NewTracedConversation 创建带思路摘要能力的会话。
+// 由 Client 负责初始化底层 Conversation，可以避免调用方先手动 new Conversation。
+func (c *Client) NewTracedConversation(policy TraceUpdatePolicy) *TracedConversation {
+	return NewTracedConversation(c.NewConversation(), policy)
 }

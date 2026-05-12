@@ -1,105 +1,142 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
-	"glm-demo/llmkit" // 请替换为你的实际模块名
+	"llmkit/llmkit"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// 1. 初始化客户端
+	llmkit.TraceDebugEnabled = true
 	client, err := llmkit.NewClient(llmkit.Config{
-		Provider: llmkit.ProviderZhipu,
-		APIKey:   os.Getenv("ZHIPU_API_KEY"),
-		Model:    "glm-4v-flash",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 2. 创建会话
-	convo := client.NewConversation()
-
-	// 【关键】设置滑动窗口：只保留最近 6 条消息（即最近 3 轮对话）
-	// 这样可以防止 Token 爆炸，同时保留短期记忆
-	convo.SetMaxHistory(6)
-
-	// --- 第 1 轮：看图 ---
-	fmt.Println("=== Round 1: Identify Image ===")
-	convo.
-		AddText("这张图里有什么？").
-		AddImageURL("https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=1024")
-
-	resp1, _ := convo.Send(ctx)
-	fmt.Println("AI:", resp1)
-
-	// --- 第 2 轮：追问 ---
-	fmt.Println("\n=== Round 2: Follow-up Question ===")
-	convo.
-		AddText("它看起来开心吗？")
-
-	resp2, _ := convo.Send(ctx)
-	fmt.Println("AI:", resp2)
-
-	// --- 第 3 轮：继续追问 ---
-	fmt.Println("\n=== Round 3: Another Question ===")
-	convo.
-		AddText("给它起个名字吧。")
-
-	// 使用流式输出
-	fmt.Print("AI: ")
-	convo.SendStream(ctx, func(chunk string) error {
-		fmt.Print(chunk)
-		return nil
-	})
-	fmt.Println()
-
-	// --- 第 4 轮：测试记忆遗忘 ---
-	// 由于设置了 MaxHistory=6，此时第 1 轮的消息可能已经被移出窗口
-	// 取决于具体实现，如果第1轮被移出，模型可能不再记得图片细节
-	fmt.Println("\n=== Round 4: Test Memory (Old Context might be lost) ===")
-	convo.
-		AddText("我第一轮问的是什么问题？")
-
-	resp4, _ := convo.Send(ctx)
-	fmt.Println("AI:", resp4)
-
-	fmt.Printf("\n当前历史消息条数: %d (限制为 6)\n", len(convo.History))
-
-	// --- 第 5 轮：Qwen + Base64 图片测试 ---
-	fmt.Println("\n=== Round 5: Qwen Base64 Image Test ===")
-	qwenClient, err := llmkit.NewClient(llmkit.Config{
 		Provider: llmkit.ProviderAliyun,
-		APIKey:   os.Getenv("DASHSCOPE_API_KEY"),
-		Model:    "qwen-vl-plus",
+		APIKey:   os.Getenv("QWEN_API_KEY"),
+		Model:    "qwen3-omni-flash",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	qwenConvo := qwenClient.NewConversation()
-	qwenConvo.SetMaxHistory(6)
+	conv := client.NewTracedConversation(nil)
+	conv.SetMaxHistory(6)
 
-	imageData, err := os.ReadFile("test.png")
-	if err != nil {
-		log.Fatal(err)
+	fmt.Println("GLM 多模态交互程序")
+	fmt.Println("输入 /help 查看命令，/quit 退出")
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("> ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Println()
+				return
+			}
+			log.Fatal(err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		cmd, arg := splitCommand(line)
+		switch cmd {
+		case "/help", "help", "?", "/h":
+			printHelp()
+		case "/quit", "quit", "/exit", "exit":
+			return
+		case "/clear":
+			conv.ClearCurrentInput()
+			fmt.Println("current input cleared")
+		case "/history":
+			fmt.Printf("history=%d max=%d\n", len(conv.History), conv.MaxHistory)
+		case "/text", "text", "/t", "t":
+			if arg == "" {
+				fmt.Println("usage: /text 这里输入要发送的文字")
+				continue
+			}
+			conv.AddText(arg)
+			fmt.Println("text queued")
+		case "/img", "img", "/image", "image", "/i", "i":
+			if arg == "" {
+				fmt.Println("usage: /img <image-url|local-file-path>")
+				continue
+			}
+			if err := addImage(conv, arg); err != nil {
+				fmt.Println("add image failed:", err)
+				continue
+			}
+			fmt.Println("image queued")
+		case "/send", "send", "/s", "s":
+			resp, err := conv.Chat(ctx)
+			if err != nil {
+				fmt.Println("send failed:", err)
+				continue
+			}
+			fmt.Println("AI:", resp)
+		case "/stream", "stream", "/st", "st":
+			fmt.Print("AI: ")
+			err := conv.SendStream(ctx, func(chunk string) error {
+				fmt.Print(chunk)
+				return nil
+			})
+			fmt.Println()
+			if err != nil {
+				fmt.Println("stream failed:", err)
+			}
+		default:
+			conv.AddText(line)
+			fmt.Println("text queued")
+		}
+	}
+}
+
+func splitCommand(line string) (string, string) {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	cmd := strings.ToLower(parts[0])
+	if len(parts) == 1 {
+		return cmd, ""
+	}
+	return cmd, strings.TrimSpace(line[len(parts[0]):])
+}
+
+func printHelp() {
+	fmt.Println("命令:")
+	fmt.Println("  /text <内容>       追加一段文本到当前待发送消息")
+	fmt.Println("  /img <url|path>    追加一张图片。URL 直接发送，本地路径会转成 Base64")
+	fmt.Println("  /send              发送当前积累的内容并获取普通回复")
+	fmt.Println("  /stream            发送当前积累的内容并流式回显")
+	fmt.Println("  /clear             清空当前待发送输入")
+	fmt.Println("  /history           查看当前历史条数")
+	fmt.Println("  /quit              退出程序")
+	fmt.Println("  直接输入文本        等同于 /text <内容>")
+}
+
+func addImage(conv *llmkit.TracedConversation, source string) error {
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		conv.AddImageURL(source)
+		return nil
 	}
 
-	base64Str := base64.StdEncoding.EncodeToString(imageData)
-	qwenConvo.
-		AddText("请描述这张本地图片的内容").
-		AddImageBase64(base64Str)
-
-	qwenResp, err := qwenConvo.Send(ctx)
+	data, err := os.ReadFile(filepath.Clean(source))
 	if err != nil {
-		log.Printf("Qwen Base64 测试失败: %v", err)
-	} else {
-		fmt.Println("Qwen AI:", qwenResp)
+		return err
 	}
+
+	conv.AddImageBase64(base64.StdEncoding.EncodeToString(data))
+	return nil
 }

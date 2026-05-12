@@ -1,4 +1,4 @@
-module glm-demo
+module llmkit
 
 go 1.26.1
 

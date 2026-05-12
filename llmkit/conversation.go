@@ -33,14 +33,21 @@ func (r *RequestOptions) WithMaxTokens(m int) *RequestOptions {
 	return r
 }
 
+func (r *RequestOptions) WithTopP(p float32) *RequestOptions {
+	r.TopP = p
+	return r
+}
+
 // --- 会话管理器 (Conversation) ---
 
 // Conversation 现在兼具“会话历史管理”和“当前消息构建”的功能
 type Conversation struct {
-	client     *Client
-	History    []openai.ChatCompletionMessage
-	currentMsg *MessageBuilder // 当前正在构建的消息缓冲区
-	MaxHistory int             // 滑动窗口大小
+	client         *Client
+	History        []openai.ChatCompletionMessage
+	currentMsg     *MessageBuilder               // 当前正在构建的消息缓冲区
+	MaxHistory     int                           // 滑动窗口大小
+	SystemPrompt   *openai.ChatCompletionMessage // 可选的 system prompt，始终位于请求最前
+	RequestOptions *RequestOptions               // 当前会话默认请求参数，由 Conversation 持有
 }
 
 // --- 便捷的链式添加方法 (直接操作内部缓冲区) ---
@@ -71,6 +78,51 @@ func (conv *Conversation) SetMaxHistory(n int) *Conversation {
 	return conv
 }
 
+// SetRequestOptions 设置整个请求参数对象；传 nil 时恢复默认值。
+func (conv *Conversation) SetRequestOptions(opts *RequestOptions) *Conversation {
+	if opts == nil {
+		conv.RequestOptions = DefaultOptions()
+		return conv
+	}
+	clone := *opts
+	conv.RequestOptions = &clone
+	return conv
+}
+
+// SetTemperature 设置会话级温度参数。
+func (conv *Conversation) SetTemperature(t float32) *Conversation {
+	conv.ensureRequestOptions()
+	conv.RequestOptions.Temperature = t
+	return conv
+}
+
+// SetMaxTokens 设置会话级最大输出 token。
+func (conv *Conversation) SetMaxTokens(m int) *Conversation {
+	conv.ensureRequestOptions()
+	conv.RequestOptions.MaxTokens = m
+	return conv
+}
+
+// SetTopP 设置会话级 top-p 采样参数。
+func (conv *Conversation) SetTopP(p float32) *Conversation {
+	conv.ensureRequestOptions()
+	conv.RequestOptions.TopP = p
+	return conv
+}
+
+// SetSystemPrompt 设置或替换 system prompt。system message 始终位于发送给模型的消息最前端，
+// 不计入历史裁剪逻辑，也不会被当做 user/assistant 历史处理。
+func (conv *Conversation) SetSystemPrompt(text string) {
+	if text == "" {
+		conv.SystemPrompt = nil
+		return
+	}
+	conv.SystemPrompt = &openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: text,
+	}
+}
+
 // ClearCurrentInput 手动清空当前输入缓冲区（通常不需要手动调用，Send 会自动处理）
 func (conv *Conversation) ClearCurrentInput() {
 	conv.currentMsg = NewMessageBuilder()
@@ -83,10 +135,36 @@ func (conv *Conversation) trimHistory() {
 	}
 }
 
+func (conv *Conversation) ensureRequestOptions() {
+	if conv.RequestOptions == nil {
+		conv.RequestOptions = DefaultOptions()
+	}
+}
+
+func (conv *Conversation) currentRequestOptions() *RequestOptions {
+	conv.ensureRequestOptions()
+	clone := *conv.RequestOptions
+	return &clone
+}
+
+// historyWithSystem 返回用于发送给 LLM 的消息切片：若存在 SystemPrompt，则始终放在最前。
+func (conv *Conversation) historyWithSystem() []openai.ChatCompletionMessage {
+	if conv.SystemPrompt == nil {
+		// 返回 History 的拷贝以避免外部修改
+		msgs := make([]openai.ChatCompletionMessage, len(conv.History))
+		copy(msgs, conv.History)
+		return msgs
+	}
+	msgs := make([]openai.ChatCompletionMessage, 0, 1+len(conv.History))
+	msgs = append(msgs, *conv.SystemPrompt)
+	msgs = append(msgs, conv.History...)
+	return msgs
+}
+
 // --- 发送方法 (自动读取缓冲区并清空) ---
 
 // Send 发送当前缓冲区的内容，并自动清空缓冲区
-func (conv *Conversation) Send(ctx context.Context, opts ...*RequestOptions) (string, error) {
+func (conv *Conversation) Send(ctx context.Context) (string, error) {
 	// 1. 从缓冲区构建消息
 	if len(conv.currentMsg.parts) == 0 {
 		return "", fmt.Errorf("current message is empty, please AddText or AddImage first")
@@ -102,14 +180,11 @@ func (conv *Conversation) Send(ctx context.Context, opts ...*RequestOptions) (st
 	conv.trimHistory()
 
 	// 4. 配置与请求
-	options := DefaultOptions()
-	if len(opts) > 0 && opts[0] != nil {
-		options = opts[0]
-	}
+	options := conv.currentRequestOptions()
 
 	req := openai.ChatCompletionRequest{
 		Model:       conv.client.model,
-		Messages:    conv.History,
+		Messages:    conv.historyWithSystem(),
 		Temperature: options.Temperature,
 		MaxTokens:   options.MaxTokens,
 		TopP:        options.TopP,
@@ -139,7 +214,7 @@ func (conv *Conversation) Send(ctx context.Context, opts ...*RequestOptions) (st
 type StreamCallback func(chunk string) error
 
 // SendStream 流式发送，同样自动清空缓冲区
-func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallback, opts ...*RequestOptions) error {
+func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallback) error {
 	if len(conv.currentMsg.parts) == 0 {
 		return fmt.Errorf("current message is empty")
 	}
@@ -150,14 +225,11 @@ func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallbac
 	conv.History = append(conv.History, userMsg)
 	conv.trimHistory()
 
-	options := DefaultOptions()
-	if len(opts) > 0 && opts[0] != nil {
-		options = opts[0]
-	}
+	options := conv.currentRequestOptions()
 
 	req := openai.ChatCompletionRequest{
 		Model:       conv.client.model,
-		Messages:    conv.History,
+		Messages:    conv.historyWithSystem(),
 		Temperature: options.Temperature,
 		MaxTokens:   options.MaxTokens,
 		TopP:        options.TopP,
@@ -198,4 +270,9 @@ func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallbac
 	})
 
 	return nil
+}
+
+// Chat 是 Send 的别名，便于使用更语义化的方法名（兼容外部示例中使用 Chat 的习惯）
+func (conv *Conversation) Chat(ctx context.Context) (string, error) {
+	return conv.Send(ctx)
 }
