@@ -2,7 +2,10 @@ package test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"llmkit/llmkit"
@@ -174,6 +177,43 @@ func TestTracedConversationJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConversationAddImageAutoDetect(t *testing.T) {
+	t.Run("url", func(t *testing.T) {
+		conv := &llmkit.Conversation{CurrentMsg: llmkit.NewMessageBuilder()}
+		conv.AddImage("https://example.com/image.png")
+
+		snapshot := extractConversationSnapshot(t, mustExportJSON(t, conv))
+		if got, want := len(snapshot.CurrentParts), 1; got != want {
+			t.Fatalf("current parts length mismatch: got %d want %d", got, want)
+		}
+		if got, want := snapshot.CurrentParts[0].ImageURL.URL, "https://example.com/image.png"; got != want {
+			t.Fatalf("url mismatch: got %q want %q", got, want)
+		}
+	})
+
+	t.Run("file path", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sample.png")
+		if err := os.WriteFile(path, []byte("local-image-bytes"), 0o600); err != nil {
+			t.Fatalf("write temp file failed: %v", err)
+		}
+
+		conv := &llmkit.Conversation{CurrentMsg: llmkit.NewMessageBuilder()}
+		conv.AddImage(path)
+
+		snapshot := extractConversationSnapshot(t, mustExportJSON(t, conv))
+		if got, want := len(snapshot.CurrentParts), 1; got != want {
+			t.Fatalf("current parts length mismatch: got %d want %d", got, want)
+		}
+		if snapshot.CurrentParts[0].ImageURL == nil {
+			t.Fatalf("expected image url payload")
+		}
+		if !strings.HasPrefix(snapshot.CurrentParts[0].ImageURL.URL, "data:image/png;base64,") {
+			t.Fatalf("expected base64 data url, got %q", snapshot.CurrentParts[0].ImageURL.URL)
+		}
+	})
+}
+
 func assertConversationJSON(t *testing.T, data string, expectedText string, expectedImageURL string) {
 	t.Helper()
 
@@ -241,6 +281,16 @@ func addTraceField(t *testing.T, data string, trace string) string {
 		t.Fatalf("failed to encode JSON: %v", err)
 	}
 	return string(encoded)
+}
+
+func mustExportJSON(t *testing.T, conv *llmkit.Conversation) string {
+	t.Helper()
+
+	data, err := conv.ExportJSON()
+	if err != nil {
+		t.Fatalf("ExportJSON failed: %v", err)
+	}
+	return data
 }
 
 func jsonEqual(t *testing.T, left, right string) bool {

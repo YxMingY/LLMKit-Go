@@ -3,12 +3,10 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"llmkit/llmkit"
@@ -127,16 +125,6 @@ func printHelp() {
 }
 
 func addImage(conv *llmkit.TracedConversation, source string) error {
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
-		conv.AddImageURL(source)
-		return nil
-	}
-
-	data, err := os.ReadFile(filepath.Clean(source))
-	if err != nil {
-		return err
-	}
-
-	conv.AddImageBase64(base64.StdEncoding.EncodeToString(data))
+	conv.AddImage(source)
 	return nil
 }

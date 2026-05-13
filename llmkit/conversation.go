@@ -2,8 +2,12 @@ package llmkit
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -136,6 +140,26 @@ func (conv *Conversation) AddText(text string) *Conversation {
 func (conv *Conversation) AddImageURL(url string) *Conversation {
 	conv.CurrentMsg.AddImageURL(url)
 	return conv
+}
+
+// AddImage 自动识别输入是图片 URL 还是本地文件路径。
+// URL 直接发送；本地文件会读取后转为 Base64 再发送。
+func (conv *Conversation) AddImage(source string) *Conversation {
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		return conv.AddImageURL(source)
+	}
+
+	if strings.HasPrefix(source, "data:") {
+		return conv.AddImageBase64(source)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(source))
+	if err == nil {
+		conv.AddImageBase64(base64.StdEncoding.EncodeToString(data))
+		return conv
+	}
+
+	return conv.AddImageBase64(source)
 }
 
 // AddImageBase64 向当前消息缓冲区添加 Base64 图片。
