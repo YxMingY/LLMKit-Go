@@ -71,7 +71,7 @@ func (c *Client) NewConversation() *Conversation {
 	return &Conversation{
 		client:         c,
 		History:        make([]openai.ChatCompletionMessage, 0),
-		currentMsg:     NewMessageBuilder(), // 初始化一个空的构建器
+		CurrentMsg:     NewMessageBuilder(), // 初始化一个空的构建器
 		MaxHistory:     0,
 		RequestOptions: DefaultOptions(),
 	}

@@ -2,6 +2,7 @@ package llmkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -44,30 +45,103 @@ func (r *RequestOptions) WithTopP(p float32) *RequestOptions {
 type Conversation struct {
 	client         *Client
 	History        []openai.ChatCompletionMessage
-	currentMsg     *MessageBuilder               // 当前正在构建的消息缓冲区
+	CurrentMsg     *MessageBuilder               // 当前正在构建的消息缓冲区
 	MaxHistory     int                           // 滑动窗口大小
 	SystemPrompt   *openai.ChatCompletionMessage // 可选的 system prompt，始终位于请求最前
 	RequestOptions *RequestOptions               // 当前会话默认请求参数，由 Conversation 持有
+}
+
+type conversationJSONSnapshot struct {
+	History        []openai.ChatCompletionMessage `json:"history"`
+	CurrentParts   []openai.ChatMessagePart       `json:"current_parts,omitempty"`
+	MaxHistory     int                            `json:"max_history"`
+	SystemPrompt   *openai.ChatCompletionMessage  `json:"system_prompt,omitempty"`
+	RequestOptions *RequestOptions                `json:"request_options,omitempty"`
+}
+
+func cloneRequestOptions(opts *RequestOptions) *RequestOptions {
+	if opts == nil {
+		return nil
+	}
+	clone := *opts
+	return &clone
+}
+
+func (conv *Conversation) conversationSnapshot() conversationJSONSnapshot {
+	parts := []openai.ChatMessagePart{}
+	if conv.CurrentMsg != nil {
+		parts = append(parts, conv.CurrentMsg.parts...)
+	}
+
+	return conversationJSONSnapshot{
+		History:        append([]openai.ChatCompletionMessage(nil), conv.History...),
+		CurrentParts:   parts,
+		MaxHistory:     conv.MaxHistory,
+		SystemPrompt:   conv.SystemPrompt,
+		RequestOptions: cloneRequestOptions(conv.RequestOptions),
+	}
+}
+
+func (conv *Conversation) applyConversationSnapshot(snapshot conversationJSONSnapshot) {
+	conv.History = append([]openai.ChatCompletionMessage(nil), snapshot.History...)
+	conv.MaxHistory = snapshot.MaxHistory
+
+	if snapshot.SystemPrompt != nil {
+		prompt := *snapshot.SystemPrompt
+		conv.SystemPrompt = &prompt
+	} else {
+		conv.SystemPrompt = nil
+	}
+
+	if snapshot.RequestOptions != nil {
+		conv.RequestOptions = cloneRequestOptions(snapshot.RequestOptions)
+	} else {
+		conv.RequestOptions = nil
+	}
+
+	conv.CurrentMsg = &MessageBuilder{parts: append([]openai.ChatMessagePart(nil), snapshot.CurrentParts...)}
+	if conv.CurrentMsg == nil {
+		conv.CurrentMsg = NewMessageBuilder()
+	}
+}
+
+// ExportJSON 将当前会话状态导出为 JSON 字符串，便于重启后恢复上下文。
+func (conv *Conversation) ExportJSON() (string, error) {
+	payload, err := json.Marshal(conv.conversationSnapshot())
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+// ImportJSON 从 JSON 字符串恢复会话状态。
+func (conv *Conversation) ImportJSON(data string) error {
+	var snapshot conversationJSONSnapshot
+	if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
+		return err
+	}
+	conv.applyConversationSnapshot(snapshot)
+	return nil
 }
 
 // --- 便捷的链式添加方法 (直接操作内部缓冲区) ---
 
 // AddText 向当前消息缓冲区添加文本
 func (conv *Conversation) AddText(text string) *Conversation {
-	conv.currentMsg.AddText(text)
+	conv.CurrentMsg.AddText(text)
 	return conv
 }
 
 // AddImageURL 向当前消息缓冲区添加图片 URL
 func (conv *Conversation) AddImageURL(url string) *Conversation {
-	conv.currentMsg.AddImageURL(url)
+	conv.CurrentMsg.AddImageURL(url)
 	return conv
 }
 
 // AddImageBase64 向当前消息缓冲区添加 Base64 图片。
 // 默认会按 image/png 处理；如需其他类型，可额外传入 MIME 类型。
 func (conv *Conversation) AddImageBase64(data string, mimeType ...string) *Conversation {
-	conv.currentMsg.AddImageBase64(data, mimeType...)
+	conv.CurrentMsg.AddImageBase64(data, mimeType...)
 	return conv
 }
 
@@ -125,7 +199,7 @@ func (conv *Conversation) SetSystemPrompt(text string) {
 
 // ClearCurrentInput 手动清空当前输入缓冲区（通常不需要手动调用，Send 会自动处理）
 func (conv *Conversation) ClearCurrentInput() {
-	conv.currentMsg = NewMessageBuilder()
+	conv.CurrentMsg = NewMessageBuilder()
 }
 
 // trimHistory 内部裁剪逻辑
@@ -166,14 +240,14 @@ func (conv *Conversation) historyWithSystem() []openai.ChatCompletionMessage {
 // Send 发送当前缓冲区的内容，并自动清空缓冲区
 func (conv *Conversation) Send(ctx context.Context) (string, error) {
 	// 1. 从缓冲区构建消息
-	if len(conv.currentMsg.parts) == 0 {
+	if len(conv.CurrentMsg.parts) == 0 {
 		return "", fmt.Errorf("current message is empty, please AddText or AddImage first")
 	}
 
-	userMsg := conv.currentMsg.Build()
+	userMsg := conv.CurrentMsg.Build()
 
 	// 2. 立即重置缓冲区，准备下一次输入 (复用或新建均可，这里选择新建以彻底隔离状态)
-	conv.currentMsg = NewMessageBuilder()
+	conv.CurrentMsg = NewMessageBuilder()
 
 	// 3. 加入历史
 	conv.History = append(conv.History, userMsg)
@@ -215,12 +289,12 @@ type StreamCallback func(chunk string) error
 
 // SendStream 流式发送，同样自动清空缓冲区
 func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallback) error {
-	if len(conv.currentMsg.parts) == 0 {
+	if len(conv.CurrentMsg.parts) == 0 {
 		return fmt.Errorf("current message is empty")
 	}
 
-	userMsg := conv.currentMsg.Build()
-	conv.currentMsg = NewMessageBuilder() // 发送即清空
+	userMsg := conv.CurrentMsg.Build()
+	conv.CurrentMsg = NewMessageBuilder() // 发送即清空
 
 	conv.History = append(conv.History, userMsg)
 	conv.trimHistory()

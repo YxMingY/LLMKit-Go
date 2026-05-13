@@ -2,6 +2,7 @@ package llmkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -54,6 +55,11 @@ type TracedConversation struct {
 	*Conversation
 	trace  string
 	policy TraceUpdatePolicy
+}
+
+type tracedConversationJSONSnapshot struct {
+	conversationJSONSnapshot
+	Trace *string `json:"trace,omitempty"`
 }
 
 // NewTracedConversationFromConversation 允许在已有 Conversation 上启用 trace 能力。
@@ -259,4 +265,37 @@ func (t *TracedConversation) SendStream(ctx context.Context, callback StreamCall
 // GetTrace 返回当前缓存的思路摘要（只读，便于测试或调试）。
 func (t *TracedConversation) GetTrace() string {
 	return t.trace
+}
+
+// ExportJSON 将带 trace 的会话状态导出为 JSON 字符串。
+func (t *TracedConversation) ExportJSON() (string, error) {
+	trace := t.trace
+	snapshot := tracedConversationJSONSnapshot{
+		conversationJSONSnapshot: t.conversationSnapshot(),
+		Trace:                    &trace,
+	}
+
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+// ImportJSON 从 JSON 字符串恢复带 trace 的会话状态。
+// 如果输入里不包含 trace 字段，则会恢复为默认的 EmptyTraceState。
+func (t *TracedConversation) ImportJSON(data string) error {
+	var snapshot tracedConversationJSONSnapshot
+	if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
+		return err
+	}
+
+	t.Conversation.applyConversationSnapshot(snapshot.conversationJSONSnapshot)
+	if snapshot.Trace != nil {
+		t.trace = *snapshot.Trace
+	} else {
+		t.trace = EmptyTraceState
+	}
+	t.Conversation.SetSystemPrompt(RenderSystemPrompt(t.trace))
+	return nil
 }

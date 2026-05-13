@@ -9,7 +9,7 @@
 - 支持普通对话、流式输出和多轮历史
 - 支持会话滑动窗口，避免上下文无限增长
 - 支持把本地图片路径直接转换为 Base64 后发送
-- 支持可选的 traced conversation 包装，用于自动维护内部 TRACE_STATE
+- 支持可选的 traced conversation 包装，自动维护内部当前会话逻辑思路，使AI具有更长的记忆上下文
 
 ## 入口程序
 
@@ -36,6 +36,7 @@
 - [llmkit/traced_conversation.go](llmkit/traced_conversation.go) - 带 TRACE_STATE 自动更新的会话包装
 - [llmkit/trace_state.go](llmkit/trace_state.go) - TRACE_STATE 模板和 system prompt 生成
 - [test/test.go](test/test.go) - 额外的多模态示例程序
+- [LICENSE](LICENSE) - 项目许可证，当前为 GPL-3.0-only
 
 ## 运行环境
 
@@ -162,6 +163,36 @@ conv.SetMaxHistory(6)
 - [llmkit/traced_conversation.go](llmkit/traced_conversation.go#L1)
 - [llmkit/trace_state.go](llmkit/trace_state.go#L1-L200)
 
+## 会话导出与恢复
+
+`Conversation` 和 `TracedConversation` 都支持把当前会话导出为 JSON 字符串，再在重启后导入恢复上下文。
+
+```go
+data, err := convo.ExportJSON()
+if err != nil {
+    log.Fatal(err)
+}
+
+restored := client.NewConversation()
+if err := restored.ImportJSON(data); err != nil {
+    log.Fatal(err)
+}
+```
+
+如果是 `TracedConversation`，导出的 JSON 还会包含 trace 状态：
+
+```go
+traceData, err := traced.ExportJSON()
+if err != nil {
+    log.Fatal(err)
+}
+
+restoredTraced := client.NewTracedConversation(nil)
+if err := restoredTraced.ImportJSON(traceData); err != nil {
+    log.Fatal(err)
+}
+```
+
 ## 设计说明
 
 - `Conversation` 会把每次发送的用户消息和模型回复都加入历史
@@ -177,4 +208,4 @@ conv.SetMaxHistory(6)
 
 ## 许可证
 
-未指定许可证。如需开源分发，请补充相应 LICENSE 文件。
+本项目采用 [GPL-3.0-only](LICENSE) 许可证。
