@@ -11,6 +11,7 @@ import (
 
 const MaxTraceLen = 800
 const CompressTargetLen = 500
+const MaxTraceHistorySize = 50 // 最多保留 50 个 trace 快照
 
 // TraceUpdatePolicy 控制何时触发思路摘要更新。可插拔以支持不同策略。
 type TraceUpdatePolicy interface {
@@ -48,18 +49,26 @@ func (p *CountPolicy) OnUpdate() {
 	p.counter = 0
 }
 
+// traceSnapshot trace 状态快照，用于回溯时恢复
+type traceSnapshot struct {
+	MessageIndex int    `json:"message_index"` // 对应 History 的索引位置（第几条消息后更新的 trace）
+	TraceState   string `json:"trace_state"`   // 当时的 trace 状态
+}
+
 // TracedConversation 是对 Conversation 的装饰器。
-// 这里使用匿名组合而不是再手写一层转发，目的是让 Conversation 的大部分方法自然“继承”到包装器上，
+// 这里使用匿名组合而不是再手写一层转发，目的是让 Conversation 的大部分方法自然"继承"到包装器上，
 // 只对 Chat / Send / SendStream 这些真正需要插入 trace 逻辑的入口做覆盖。
 type TracedConversation struct {
 	*Conversation
-	trace  string
-	policy TraceUpdatePolicy
+	trace        string
+	policy       TraceUpdatePolicy
+	traceHistory []traceSnapshot // trace 历史快照，用于回溯
 }
 
 type tracedConversationJSONSnapshot struct {
 	conversationJSONSnapshot
-	Trace *string `json:"trace,omitempty"`
+	Trace        string          `json:"trace,omitempty"`
+	TraceHistory []traceSnapshot `json:"trace_history,omitempty"` // trace 历史快照
 }
 
 // NewTracedConversationFromConversation 允许在已有 Conversation 上启用 trace 能力。
@@ -194,6 +203,9 @@ func (t *TracedConversation) maybeUpdateTrace(ctx context.Context) error {
 
 	traceDebug("system prompt updated")
 
+	// 记录 trace 快照
+	t.addTraceSnapshot(len(t.Conversation.History), newState)
+
 	t.policy.OnUpdate()
 	traceDebug("maybeUpdateTrace: done")
 
@@ -262,6 +274,19 @@ func (t *TracedConversation) SendStream(ctx context.Context, callback StreamCall
 	return t.Conversation.SendStream(ctx, callback)
 }
 
+// addTraceSnapshot 添加 trace 快照，并控制历史记录大小
+func (t *TracedConversation) addTraceSnapshot(messageIndex int, traceState string) {
+	t.traceHistory = append(t.traceHistory, traceSnapshot{
+		MessageIndex: messageIndex,
+		TraceState:   traceState,
+	})
+
+	// 超过限制时删除最旧的快照
+	if len(t.traceHistory) > MaxTraceHistorySize {
+		t.traceHistory = t.traceHistory[1:]
+	}
+}
+
 // GetTrace 返回当前缓存的思路摘要（只读，便于测试或调试）。
 func (t *TracedConversation) GetTrace() string {
 	return t.trace
@@ -272,7 +297,8 @@ func (t *TracedConversation) ExportJSON() (string, error) {
 	trace := t.trace
 	snapshot := tracedConversationJSONSnapshot{
 		conversationJSONSnapshot: t.conversationSnapshot(),
-		Trace:                    &trace,
+		Trace:                    trace,
+		TraceHistory:             t.traceHistory,
 	}
 
 	payload, err := json.Marshal(snapshot)
@@ -291,11 +317,57 @@ func (t *TracedConversation) ImportJSON(data string) error {
 	}
 
 	t.Conversation.applyConversationSnapshot(snapshot.conversationJSONSnapshot)
-	if snapshot.Trace != nil {
-		t.trace = *snapshot.Trace
-	} else {
+	t.trace = snapshot.Trace
+	if t.trace == "" {
 		t.trace = EmptyTraceState
 	}
 	t.Conversation.SetSystemPrompt(RenderSystemPrompt(t.trace))
+
+	// 恢复 trace 历史
+	if snapshot.TraceHistory != nil {
+		t.traceHistory = snapshot.TraceHistory
+	} else {
+		t.traceHistory = []traceSnapshot{}
+	}
+
 	return nil
+}
+
+// RollbackMessages 回滚最新的 n 条消息对（user + assistant）
+// 参数 n: 要删除的消息对数量（每条 user 消息对应一条 assistant 回复）
+// 返回：实际删除的消息对数量
+func (t *TracedConversation) RollbackMessages(n int) int {
+	if n <= 0 || len(t.Conversation.History) == 0 {
+		return 0
+	}
+
+	// 调用底层 Conversation 的 RollbackMessages 回滚 History
+	deletedPairs := t.Conversation.RollbackMessages(n)
+	if deletedPairs == 0 {
+		return 0
+	}
+
+	// 恢复 trace 状态：找到最后一个 MessageIndex <= 当前 History 长度的快照
+	currentLength := len(t.Conversation.History)
+	t.restoreTraceAt(currentLength)
+
+	return deletedPairs
+}
+
+// restoreTraceAt 恢复到指定消息索引位置的 trace 状态
+func (t *TracedConversation) restoreTraceAt(messageIndex int) {
+	// 从后往前找最后一个符合条件的快照
+	for i := len(t.traceHistory) - 1; i >= 0; i-- {
+		if t.traceHistory[i].MessageIndex <= messageIndex {
+			t.trace = t.traceHistory[i].TraceState
+			t.Conversation.SetSystemPrompt(RenderSystemPrompt(t.trace))
+			traceDebug("restored trace at index %d", messageIndex)
+			return
+		}
+	}
+
+	// 如果没有找到快照，使用默认的空 trace
+	t.trace = EmptyTraceState
+	t.Conversation.SetSystemPrompt(RenderSystemPrompt(t.trace))
+	traceDebug("restored to empty trace at index %d", messageIndex)
 }

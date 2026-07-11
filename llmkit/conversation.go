@@ -374,3 +374,25 @@ func (conv *Conversation) SendStream(ctx context.Context, callback StreamCallbac
 func (conv *Conversation) Chat(ctx context.Context) (string, error) {
 	return conv.Send(ctx)
 }
+
+// RollbackMessages 回滚最新的 n 条消息对（user + assistant）
+// 参数 n: 要删除的消息对数量（每条 user 消息对应一条 assistant 回复）
+// 返回：实际删除的消息对数量
+func (conv *Conversation) RollbackMessages(n int) int {
+	if n <= 0 || len(conv.History) == 0 {
+		return 0
+	}
+
+	// 计算要删除的消息数量（每条消息对占 2 个位置：user + assistant）
+	messagesToRemove := n * 2
+	if messagesToRemove > len(conv.History) {
+		messagesToRemove = len(conv.History)
+	}
+
+	newLength := len(conv.History) - messagesToRemove
+
+	// 回滚 History
+	conv.History = conv.History[:newLength]
+
+	return messagesToRemove / 2 // 返回删除的消息对数量
+}
